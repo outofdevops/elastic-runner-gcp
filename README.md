@@ -24,7 +24,23 @@ Substitution variables:
 - `_REPO_FULLNAME` = $(body.repository.full_name)
 - `_REPO_NAME` = $(body.repository.name)
 - `_RUNNER_LABELS` = $(body.workflow_job.labels)
+- `_TIMEOUT` = 600
 
+Create a secret with a github token 
+
+```bash
+PROJECT_NUMBER="THE-PROJECT-NUMBER"
+SA_EMAIL="runner-bootstrap@YOUR-PROJECT-ID.iam.gserviceaccount.com"
+gcloud alpha builds triggers create webhook \
+  --name=elastic-runner-webhook \
+  --secret=projects/$PROJECT_NUMBER/secrets/webhook-secret/versions/latest \
+  --substitutions=_ACTION='$(body.action)',_JOB_NAME='$(body.workflow_job.name)',_ORG_NAME=$(body.organization.login),_REPO_FULLNAME=$(body.repository.full_name),_REPO_NAME=$(body.repository.name),_RUNNER_LABELS=$(body.workflow_job.labels),_TIMEOUT=600 \
+  --filter='_ACTION == "queued"' \
+  --service-account=r$SA_EMAIL \
+  --inline-config=build-config.yaml
+```
+
+Create a file named `build-config.yaml` with this content:
 ```yaml
 steps:
   - name: gcr.io/cloud-builders/gcloud
@@ -55,6 +71,18 @@ steps:
           - docker-ce-cli
           - containerd.io
         write_files:
+          - path: /etc/systemd/system/shutdown.service
+            permissions: 0644
+            owner: root
+            content: |
+              [Unit]
+              Description=Shutdown Service
+              [Service]
+              Type=simple
+              Restart=no
+              ExecStart=/bin/bash /etc/systemd/system/shutdown.sh
+              [Install]
+              WantedBy=multi-user.target
           - path: /etc/systemd/system/ghr.service
             permissions: 0644
             owner: root
@@ -81,11 +109,11 @@ steps:
               #!/usr/bin/env bash
               set -euo pipefail
               REGISTRATION_TOKEN=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/REGISTRATION_TOKEN)
+              RUNNER_LABELS=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/RUNNER_LABELS)
+              REPO_FULLNAME=\$(curl -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/attributes/REPO_FULLNAME)
               curl -o /home/ghr/actions-runner-linux-x64-2.285.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.285.1/actions-runner-linux-x64-2.285.1.tar.gz
               tar xzf /home/ghr/actions-runner-linux-x64-2.285.1.tar.gz
-              # Strip square brackets and double quotes from _RUNNER_LABELS
-              RUNNER_LABELS=\$(echo '${_RUNNER_LABELS}' | sed 's/^\[//;s/\]$//;s/"//g')
-              /home/ghr/config.sh --unattended --url https://github.com/${_REPO_FULLNAME} --token \$${REGISTRATION_TOKEN} --labels \$${RUNNER_LABELS} --ephemeral
+              /home/ghr/config.sh --unattended --url https://github.com/\$${REPO_FULLNAME} --token \$${REGISTRATION_TOKEN} --labels \$${RUNNER_LABELS} --ephemeral
           - path: /home/ghr/terminate.sh
             permissions: 0755
             owner: root
@@ -95,10 +123,27 @@ steps:
               NAME=\$(curl -X GET http://metadata.google.internal/computeMetadata/v1/instance/name -H 'Metadata-Flavor: Google')
               ZONE=\$(curl -X GET http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')
               gcloud --quiet compute instances delete \$$NAME --zone=\$$ZONE
+          - path: /etc/systemd/system/shutdown.sh
+            permissions: 0755
+            owner: root
+            content: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              NAME=\$(curl -X GET http://metadata.google.internal/computeMetadata/v1/instance/name -H 'Metadata-Flavor: Google')
+              ZONE=\$(curl -X GET http://metadata.google.internal/computeMetadata/v1/instance/zone -H 'Metadata-Flavor: Google')
+              TIMEOUT=\$(curl -X GET http://metadata.google.internal/computeMetadata/v1/instance/attributes/TIMEOUT -H 'Metadata-Flavor: Google')
+              re='^[0-9]+$'
+              if [[ \$$TIMEOUT =~ \$$re ]] ; then
+                echo "TIMEOUT is a valid number" >&2
+                sleep \$$TIMEOUT
+                shutdown +2
+                gcloud --quiet compute instances delete \$$NAME --zone=\$$ZONE
+              fi
         runcmd:
           - chown -R ghr /home/ghr
           - systemctl daemon-reload
           - systemctl start docker
+          - systemctl start shutdown.service
           - systemctl start ghr.service
         EOF
   - name: gcr.io/cloud-builders/gcloud
@@ -118,7 +163,6 @@ steps:
           if [ \$? == 0 ]; then
             echo "Ran - Success - `date`" >> /root/startup
             systemctl enable cloud-init
-            #systemctl start cloud-init
           else
             echo "Ran - Fail - `date`" >> /root/startup
           fi
@@ -145,10 +189,10 @@ steps:
     args:
       - '-c'
       - |
-        echo $_ACTION
         apt update && apt install jq -y
         REGISTRATION_TOKEN=$(curl -H "Authorization: token $$GITHUB_TOKEN" -X POST https://api.github.com/repos/${_REPO_FULLNAME}/actions/runners/registration-token | jq -r .token)
         RUNNER_NAME=ghr-$(cat /proc/sys/kernel/random/uuid | sed 's/[-]//g' | head -c 6; echo;)
+        RUNNER_LABELS=$(echo '${_RUNNER_LABELS}' | jq -r '@csv' | sed 's/"//g')
         gcloud compute instances create $$RUNNER_NAME \
         --project=$PROJECT_ID \
         --zone=europe-west1-b \
@@ -158,7 +202,7 @@ steps:
         --service-account=github-runner@$PROJECT_ID.iam.gserviceaccount.com \
         --scopes=https://www.googleapis.com/auth/cloud-platform \
         --create-disk=auto-delete=yes,boot=yes,device-name=instance-1,image=projects/centos-cloud/global/images/centos-7-v20211214,mode=rw,size=20,type=projects/$PROJECT_ID/zones/europe-west1-b/diskTypes/pd-ssd \
-        --metadata=REGISTRATION_TOKEN=$$REGISTRATION_TOKEN \
+        --metadata=^:^REGISTRATION_TOKEN=$$REGISTRATION_TOKEN:RUNNER_LABELS=$$RUNNER_LABELS:REPO_FULLNAME=${_REPO_FULLNAME}:TIMEOUT=${_TIMEOUT} \
         --metadata-from-file user-data=/workspace/ci.yml,startup-script=/workspace/startup.sh,shutdown-script=/workspace/shutdown.sh \
         --no-shielded-secure-boot \
         --preemptible \
