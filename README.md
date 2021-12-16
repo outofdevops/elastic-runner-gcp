@@ -29,14 +29,14 @@ Substitution variables:
 Create a secret with a github token 
 
 ```bash
-PROJECT_NUMBER="THE-PROJECT-NUMBER"
-SA_EMAIL="runner-bootstrap@YOUR-PROJECT-ID.iam.gserviceaccount.com"
+PROJECT_ID="THE-PROJECT-ID"
+SA="projects/${PROJECT_ID}/serviceAccounts/runner-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com"
 gcloud alpha builds triggers create webhook \
   --name=elastic-runner-webhook \
-  --secret=projects/$PROJECT_NUMBER/secrets/webhook-secret/versions/latest \
+  --secret=projects/$PROJECT_ID/secrets/webhook-secret/versions/latest \
   --substitutions=_ACTION='$(body.action)',_JOB_NAME='$(body.workflow_job.name)',_ORG_NAME='$(body.organization.login)',_REPO_FULLNAME='$(body.repository.full_name)',_REPO_NAME='$(body.repository.name)',_RUNNER_LABELS='$(body.workflow_job.labels)',_TIMEOUT=600 \
   --filter='_ACTION == "queued"' \
-  --service-account=$SA_EMAIL \
+  --service-account=$SA \
   --inline-config=build-config.yaml
 ```
 
