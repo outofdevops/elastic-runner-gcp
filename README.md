@@ -36,7 +36,7 @@ gcloud alpha builds triggers create webhook \
   --secret=projects/$PROJECT_NUMBER/secrets/webhook-secret/versions/latest \
   --substitutions=_ACTION='$(body.action)',_JOB_NAME='$(body.workflow_job.name)',_ORG_NAME='$(body.organization.login)',_REPO_FULLNAME='$(body.repository.full_name)',_REPO_NAME='$(body.repository.name)',_RUNNER_LABELS='$(body.workflow_job.labels)',_TIMEOUT=600 \
   --filter='_ACTION == "queued"' \
-  --service-account=r$SA_EMAIL \
+  --service-account=$SA_EMAIL \
   --inline-config=build-config.yaml
 ```
 
