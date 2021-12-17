@@ -12,12 +12,18 @@ You need to have access to GCP, the services we are going to use are: Secret Man
 ## Plan
 We are going to configure a Cloud Build Webhook Trigger to run when a job is queued. The trigger will spin-up a VM that will register a new runner. The new runner will be executed using the `--ephemeral` flag ([GitHub Docs](https://docs.github.com/en/actions/hosting-your-own-runners/autoscaling-with-self-hosted-runners#using-ephemeral-runners-for-autoscaling)). The `--ephemeral` flag makes the runner available for a single job execution, after that the runner is de-registered and we can delete the instance.![image](https://user-images.githubusercontent.com/2351518/146522423-3229a657-98ab-4c3c-9b37-e89cdb063072.png)
 
+### Before we start
+Before we start we need to create the following resources:
+- A Secret in Google Secret Manager containing the GitHub token that cloud build will use to generate a registration token
+- A secret for the webhook (this can also be created automatically on the cloud console)
+- A service account used by cloudbuild `runner-bootstrap` (roles: Compute Instance Admin (beta), Logs Writer, Service Account User)
+- A service Account used by the VM `github-runner` (roles: Compute Instance Admin (beta), Logs Writer)
 
+### Cloudbuild
 
-### CloudBuild
+Can be triggered by code changes but also via webhooks.
+Cloudbuild can also extract information from the payload sent by the caller. So, we are going to pass the following variables to th cloud build configuration.
 
-Event -> Webhook event
-Inline cloudbuild configuration
 Substitution variables:
 - `_ACTION` = $(body.action)
 - `_JOB_NAME` = $(body.workflow_job.name)
@@ -27,24 +33,9 @@ Substitution variables:
 - `_RUNNER_LABELS` = $(body.workflow_job.labels)
 - `_TIMEOUT` = 600
 
-Before we start we need to create the following resources:
-- A Secret in Google Secret Manager containing the GitHub token that cloud build will use to generate a registration token
-- A secret for the webhook (this can also be created automatically on the cloud console)
-- A service account used by cloudbuild `runner-bootstrap` (roles: Compute Instance Admin (beta), Logs Writer, Service Account User)
-- A service Account used by the VM `github-runner` (roles: Compute Instance Admin (beta), Logs Writer)
+The payload is documented on GitHub [docs](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#workflow_job)
 
-```bash
-PROJECT_ID="THE-PROJECT-ID"
-SA="projects/${PROJECT_ID}/serviceAccounts/runner-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com"
-gcloud alpha builds triggers create webhook \
-  --name=elastic-runner-webhook \
-  --secret=projects/$PROJECT_ID/secrets/webhook-secret/versions/latest \
-  --substitutions=_ACTION='$(body.action)',_JOB_NAME='$(body.workflow_job.name)',_ORG_NAME='$(body.organization.login)',_REPO_FULLNAME='$(body.repository.full_name)',_REPO_NAME='$(body.repository.name)',_RUNNER_LABELS='$(body.workflow_job.labels)',_TIMEOUT=600 \
-  --filter='_ACTION == "queued"' \
-  --service-account=$SA \
-  --inline-config=build-config.yaml
-```
-
+#### Using gcloud on the terminal
 Create a file named `build-config.yaml` with this content:
 ```yaml
 steps:
@@ -224,6 +215,22 @@ availableSecrets:
   - versionName: projects/$PROJECT_NUMBER/secrets/github-token/versions/latest
     env: 'GITHUB_TOKEN'
 ```
+
+Now we can create the trigger with following command:
+
+```bash
+PROJECT_ID="THE-PROJECT-ID"
+SA="projects/${PROJECT_ID}/serviceAccounts/runner-bootstrap@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud alpha builds triggers create webhook \
+  --name=elastic-runner-webhook \
+  --secret=projects/$PROJECT_ID/secrets/webhook-secret/versions/latest \
+  --substitutions=_ACTION='$(body.action)',_JOB_NAME='$(body.workflow_job.name)',_ORG_NAME='$(body.organization.login)',_REPO_FULLNAME='$(body.repository.full_name)',_REPO_NAME='$(body.repository.name)',_RUNNER_LABELS='$(body.workflow_job.labels)',_TIMEOUT=600 \
+  --filter='_ACTION == "queued"' \
+  --service-account=$SA \
+  --inline-config=build-config.yaml
+```
+
+
 
 Now that our Trigger is created let's configure the webhook on GitHub.
 From your GitHub repo click on -> `Settings` -> `Webhooks`
