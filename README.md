@@ -4,16 +4,17 @@ How to create elastic GitHub Self Hosted Runners on demand that scale to zero wh
 Having idle runners waiting for jobs to be executed it's a waste of resources and can be very expensive for organisations that have hundreds of runners.
 
 ## The Goal
-We want to automatically spin-up a GitHub Self-Hosted Runner in GCP when a workflow is triggered. We also want to tear it down at the end of the workflow.
+We want to automatically spin-up a GitHub Self-Hosted Runners in GCP when a workflow is triggered. We also want to tear them down at the end of the workflow.
 
 ## Requirements
 You need to have access to GCP, the services we are going to use are: Secret Manager, CloudBuild and Compute Engine. You also need access to GitHub, and the permissions to generate a registration token. ([GitHub Docs](https://docs.github.com/en/rest/reference/actions#create-a-registration-token-for-a-repository)).
 
 ## Plan
-We are going to configure a Cloud Build trigger to run when there is a change in our repo. The trigger will spin-up a VM that will register a new runner. The new runner will be executed using the `--ephemeral` flag ([GitHub Docs](https://docs.github.com/en/actions/hosting-your-own-runners/autoscaling-with-self-hosted-runners#using-ephemeral-runners-for-autoscaling)). The `--ephemeral` flag makes the runner available for a single job execution, after that the runner is de-registered and we can delete the instance.
+We are going to configure a Cloud Build Webhook Trigger to run when a job is queued. The trigger will spin-up a VM that will register a new runner. The new runner will be executed using the `--ephemeral` flag ([GitHub Docs](https://docs.github.com/en/actions/hosting-your-own-runners/autoscaling-with-self-hosted-runners#using-ephemeral-runners-for-autoscaling)). The `--ephemeral` flag makes the runner available for a single job execution, after that the runner is de-registered and we can delete the instance.![image](https://user-images.githubusercontent.com/2351518/146522423-3229a657-98ab-4c3c-9b37-e89cdb063072.png)
 
 
-cloudbuild:
+
+### CloudBuild
 
 Event -> Webhook event
 Inline cloudbuild configuration
@@ -26,7 +27,11 @@ Substitution variables:
 - `_RUNNER_LABELS` = $(body.workflow_job.labels)
 - `_TIMEOUT` = 600
 
-Create a secret with a github token 
+Before we start we need to create the following resources:
+- A Secret in Google Secret Manager containing the GitHub token that cloud build will use to generate a registration token
+- A secret for the webhook (this can also be created automatically on the cloud console)
+- A service account used by cloudbuild `runner-bootstrap` (roles: Compute Instance Admin (beta), Logs Writer, Service Account User)
+- A service Account used by the VM `github-runner` (roles: Compute Instance Admin (beta), Logs Writer)
 
 ```bash
 PROJECT_ID="THE-PROJECT-ID"
@@ -219,3 +224,15 @@ availableSecrets:
   - versionName: projects/$PROJECT_NUMBER/secrets/github-token/versions/latest
     env: 'GITHUB_TOKEN'
 ```
+
+Now that our Trigger is created let's configure the webhook on GitHub.
+From your GitHub repo click on -> `Settings` -> `Webhooks`
+
+![setting-webhooks](https://user-images.githubusercontent.com/2351518/146520036-20792153-d37c-48f7-920e-ce72d437c527.png)
+Now click on `Add webhook`
+
+![add-webhook](https://user-images.githubusercontent.com/2351518/146522839-f5a8f5c5-13ca-4de4-b32e-60a46d749632.png)
+
+In the Payload URL paste the Cloud Build Webhook Trigger copied from the Trigger configuration on (Cloudbuilder):
+
+![cloudbuild-webhook](https://user-images.githubusercontent.com/2351518/146521538-06a3e59a-a6a9-490e-95d6-7b0b2570418e.png)
